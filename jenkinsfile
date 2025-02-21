@@ -1,0 +1,101 @@
+pipeline {
+    agent any
+
+    environment {
+        AWS_REGION     = "ap-south-1"
+        AWS_ACCOUNT_ID = "248189928204"
+    }
+
+    stages {
+        stage('Checkout Code') {
+            steps {
+                // Checkout your repository containing the packer HCL file
+                git branch: 'main', url: 'https://github.com/DikshanshuC/Packer-reppo.git'
+            }
+        }
+
+        stage('Install Dependencies') {
+            steps {
+                sh '''
+                    # Update system and install essential packages
+                    sudo apt-get update
+                    sudo apt-get install -y unzip curl wget git htop nginx docker.io ansible default-jdk ca-certificates gnupg
+
+                    # Enable and start essential services
+                    sudo systemctl enable --now nginx
+                    sudo systemctl enable --now docker
+
+                    # Add HashiCorp GPG key and repository
+                    wget -qO- https://apt.releases.hashicorp.com/gpg | sudo tee /usr/share/keyrings/hashicorp-archive-keyring.gpg >/dev/null
+                    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
+
+                    # Update system again and install Terraform
+                    sudo apt-get update
+                    sudo apt install -y terraform 
+
+                    # Handle apt release changes & fix broken packages
+                    until sudo apt update --allow-releaseinfo-change -y; do echo 'Retrying apt update...'; sleep 2; done
+                    sudo apt --fix-broken install -y
+
+                    # Install AWS CLI
+                    curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+                    unzip -o -q awscliv2.zip
+                    sudo ./aws/install --update
+
+                    sudo apt-get update
+                    sudo apt-get install -y unzip curl gnupg software-properties-common
+                    curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo gpg --batch --yes --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+                    echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
+                    
+                    # Update package lists
+                    sudo apt-get update
+
+                    # Install Jenkins
+                    sudo wget -O /usr/share/keyrings/jenkins-keyring.asc https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key
+                    echo "deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc] https://pkg.jenkins.io/debian-stable binary/" | sudo tee /etc/apt/sources.list.d/jenkins.list > /dev/null
+                    sudo apt-get update
+                    sudo apt-get install -y jenkins
+                    sudo systemctl enable --now jenkins
+                '''
+            }
+        }
+
+        stage('Build AMI with Packer') {
+            steps {
+                script {
+                    // Verify the Packer file exists
+                    sh 'ls -l goldenimage.pkr.hcl || { echo "goldenimage.pkr.hcl not found!"; exit 1; }'
+
+                    // Initialize Packer plugins
+                    sh 'packer init goldenimage.pkr.hcl'
+
+                    // Build the AMI and capture the output
+                    def packerOutput = sh(script: 'PACKER_LOG=1 PACKER_LOG_PATH=packer_debug.log packer build -machine-readable goldenimage.pkr.hcl | tee output.log', returnStdout: true).trim()
+
+                    // Extract the AMI ID from the Packer output
+                    def amiIdMatch = packerOutput.find(/ami-\w{8,17}/)
+                    if (amiIdMatch) {
+                        env.NEW_AMI_ID = amiIdMatch
+                        echo "New AMI ID: ${env.NEW_AMI_ID}"
+                    } else {
+                        error "AMI ID not found in Packer output!"
+                    }
+                }
+            }
+        }
+
+        stage('Find and Deregister Old AMI') {
+            steps {
+                script {
+                    // Search for an old AMI with the same name (goldenImage)
+                    def oldAmiId = sh(script: """
+                        aws ec2 describe-images --owners self --filters "Name=name,Values=goldenImage" --query 'Images | sort_by(@, &CreationDate)[0].ImageId' --output text
+                    """, returnStdout: true).trim()
+
+                    if (oldAmiId && oldAmiId != "None") {
+                        echo "Old AMI ID: ${oldAmiId}"
+                        // Deregister the old AMI
+                        sh "aws ec2 deregister-image --image-id ${oldAmiId}"
+
+                        // Delete the associated snapshot
+                        def snapshot
