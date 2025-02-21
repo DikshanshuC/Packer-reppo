@@ -9,8 +9,8 @@ packer {
 
 source "amazon-ebs" "ubuntu" {
   ami_name      = "goldenImage"
-  instance_type = "t3.micro"
-  region        = "ap-south-1"
+  instance_type = "t2.small"       // Updated to t2.small
+  region        = "ap-south-1"      // Updated region
 
   source_ami_filter {
     filters = {
@@ -19,14 +19,14 @@ source "amazon-ebs" "ubuntu" {
       virtualization-type = "hvm"
     }
     most_recent = true
-    owners      = ["099720109477"]  # Canonical's official Ubuntu AMI owner ID
+    owners      = ["099720109477"]  // Canonical's official Ubuntu AMI owner ID
   }
 
   ssh_username = "ubuntu"
 
-  # Update these with your VPC and Subnet IDs if needed
-  subnet_id  = "subnet-05d13b3f0de0754d5"
-  vpc_id     = "vpc-0ca519aed94eac2be"
+  // Updated to your instance details
+  subnet_id  = "subnet-074fddf2e9fd6e5bb"
+  vpc_id     = "vpc-06c9ca7623cef2f30"
 }
 
 build {
@@ -64,3 +64,4 @@ build {
     ]
   }
 }
+
