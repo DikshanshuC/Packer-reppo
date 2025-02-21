@@ -4,12 +4,14 @@ pipeline {
     environment {
         AWS_REGION     = "ap-south-1"
         AWS_ACCOUNT_ID = "248189928204"
+        KEY_NAME       = "packer"       // Key pair as seen in your instance details
+        INSTANCE_TYPE  = "t2.small"     // Instance type from your summary
     }
 
     stages {
         stage('Checkout Code') {
             steps {
-                // Check out the repository containing goldenimage.pkr.hcl
+                // Checkout the repository that contains goldenimage.pkr.hcl
                 git branch: 'main', url: 'https://github.com/DikshanshuC/Packer-reppo.git'
             }
         }
@@ -29,7 +31,7 @@ pipeline {
                     wget -qO- https://apt.releases.hashicorp.com/gpg | sudo tee /usr/share/keyrings/hashicorp-archive-keyring.gpg >/dev/null
                     echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
                     sudo apt-get update
-                    sudo apt-get install -y terraform
+                    sudo apt install -y terraform
 
                     # Handle apt update issues & fix broken packages
                     until sudo apt update --allow-releaseinfo-change -y; do echo 'Retrying apt update...'; sleep 2; done
@@ -67,16 +69,39 @@ pipeline {
                     sh 'packer init goldenimage.pkr.hcl'
                     
                     // Build the AMI and capture the output
-                    def packerOutput = sh(script: 'PACKER_LOG=1 PACKER_LOG_PATH=packer_debug.log packer build -machine-readable goldenimage.pkr.hcl | tee output.log', returnStdout: true).trim()
+                    def packerOutput = sh(script: '''
+                        PACKER_LOG=1 PACKER_LOG_PATH=packer_debug.log \
+                        packer build -machine-readable goldenimage.pkr.hcl | tee output.log
+                    ''', returnStdout: true).trim()
                     
                     // Extract the AMI ID from the output using regex
-                    def amiIdMatch = packerOutput.find(/ami-\w{8,17}/)
+                    def amiIdMatch = packerOutput.find(/ami-\\w{8,17}/)
                     if (amiIdMatch) {
                         env.NEW_AMI_ID = amiIdMatch
                         echo "New AMI ID: ${env.NEW_AMI_ID}"
                     } else {
                         error "AMI ID not found in Packer output!"
                     }
+                }
+            }
+        }
+
+        stage('Launch Instance') {
+            steps {
+                script {
+                    echo "Launching EC2 instance from AMI: ${env.NEW_AMI_ID}"
+                    def launchCmd = """
+                        aws ec2 run-instances \\
+                          --image-id ${env.NEW_AMI_ID} \\
+                          --count 1 \\
+                          --instance-type ${INSTANCE_TYPE} \\
+                          --key-name ${KEY_NAME} \\
+                          --region ${AWS_REGION} \\
+                          --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=GoldenInstance}]'
+                    """
+                    echo launchCmd
+                    def launchOutput = sh(script: launchCmd, returnStdout: true).trim()
+                    echo "Instance launch output: ${launchOutput}"
                 }
             }
         }
@@ -113,11 +138,12 @@ pipeline {
 
     post {
         success {
-            echo "AMI creation and cleanup completed successfully!"
+            echo "AMI creation, instance launch, and cleanup completed successfully!"
         }
         failure {
             echo "Pipeline failed! Check logs for details."
         }
     }
 }
+
 
