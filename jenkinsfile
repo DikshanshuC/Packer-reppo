@@ -4,14 +4,14 @@ pipeline {
     environment {
         AWS_REGION     = "ap-south-1"
         AWS_ACCOUNT_ID = "248189928204"
-        KEY_NAME       = "packer"       // Key pair as seen in your instance details
+        KEY_NAME       = "packer"       // Key pair as per your instance details
         INSTANCE_TYPE  = "t2.small"     // Instance type from your summary
     }
 
     stages {
         stage('Checkout Code') {
             steps {
-                // Checkout the repository that contains goldenimage.pkr.hcl
+                // Checkout repository that contains goldenimage.pkr.hcl
                 git branch: 'main', url: 'https://github.com/DikshanshuC/Packer-reppo.git'
             }
         }
@@ -19,39 +19,28 @@ pipeline {
         stage('Install Dependencies') {
             steps {
                 sh '''
-                    # Update system and install essential packages
+                    # Update system packages and install essential tools
                     sudo apt-get update
-                    sudo apt-get install -y unzip curl wget git htop nginx docker.io ansible default-jdk ca-certificates gnupg
+                    sudo apt-get install -y unzip curl wget git htop nginx docker.io ansible default-jdk ca-certificates gnupg software-properties-common
 
-                    # Enable and start essential services
+                    # Enable and start required services
                     sudo systemctl enable --now nginx
                     sudo systemctl enable --now docker
 
-                    # Add HashiCorp GPG key and repository for Terraform
-                    wget -qO- https://apt.releases.hashicorp.com/gpg | sudo tee /usr/share/keyrings/hashicorp-archive-keyring.gpg >/dev/null
-                    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
+                    # Import HashiCorp GPG key and add repository for Terraform
+                    curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+                    echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
                     sudo apt-get update
-                    sudo apt install -y terraform
-
-                    # Handle apt update issues & fix broken packages
-                    until sudo apt update --allow-releaseinfo-change -y; do echo 'Retrying apt update...'; sleep 2; done
-                    sudo apt --fix-broken install -y
+                    sudo apt-get install -y terraform
 
                     # Install AWS CLI
                     curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
                     unzip -o -q awscliv2.zip
                     sudo ./aws/install --update
 
-                    # Additional package installation for HashiCorp repo
-                    sudo apt-get update
-                    sudo apt-get install -y unzip curl gnupg software-properties-common
-                    curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo gpg --batch --yes --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
-                    echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
-                    sudo apt-get update
-
                     # Install Jenkins
                     sudo wget -O /usr/share/keyrings/jenkins-keyring.asc https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key
-                    echo "deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc] https://pkg.jenkins.io/debian-stable binary/" | sudo tee /etc/apt/sources.list.d/jenkins.list > /dev/null
+                    echo "deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc] https://pkg.jenkins.io/debian-stable binary/" | sudo tee /etc/apt/sources.list.d/jenkins.list
                     sudo apt-get update
                     sudo apt-get install -y jenkins
                     sudo systemctl enable --now jenkins
@@ -62,13 +51,13 @@ pipeline {
         stage('Build AMI with Packer') {
             steps {
                 script {
-                    // Ensure the Packer HCL file exists
+                    // Verify the Packer file exists
                     sh 'ls -l goldenimage.pkr.hcl || { echo "goldenimage.pkr.hcl not found!"; exit 1; }'
                     
                     // Initialize Packer plugins
                     sh 'packer init goldenimage.pkr.hcl'
                     
-                    // Build the AMI and capture the output
+                    // Run the Packer build and capture output
                     def packerOutput = sh(script: '''
                         PACKER_LOG=1 PACKER_LOG_PATH=packer_debug.log \
                         packer build -machine-readable goldenimage.pkr.hcl | tee output.log
