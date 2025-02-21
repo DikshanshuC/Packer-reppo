@@ -4,14 +4,14 @@ pipeline {
     environment {
         AWS_REGION     = "ap-south-1"
         AWS_ACCOUNT_ID = "248189928204"
-        KEY_NAME       = "packer"       // Key pair as per your instance details
-        INSTANCE_TYPE  = "t2.small"     // Instance type from your summary
+        KEY_NAME       = "packer"       // Use your key pair name as per your instance details
+        INSTANCE_TYPE  = "t2.small"     // Instance type from your instance summary
     }
 
     stages {
         stage('Checkout Code') {
             steps {
-                // Checkout repository that contains goldenimage.pkr.hcl
+                // Checkout repository containing goldenimage.pkr.hcl
                 git branch: 'main', url: 'https://github.com/DikshanshuC/Packer-reppo.git'
             }
         }
@@ -21,15 +21,15 @@ pipeline {
                 sh '''
                     # Update system packages and install essential tools
                     sudo apt-get update
-                    sudo apt-get install -y unzip curl wget git htop nginx docker.io ansible default-jdk ca-certificates gnupg software-properties-common
+                    sudo apt-get install -y gnupg2 dirmngr unzip curl wget git htop nginx docker.io ansible default-jdk ca-certificates gnupg software-properties-common
 
                     # Enable and start required services
                     sudo systemctl enable --now nginx
                     sudo systemctl enable --now docker
 
-                    # Import HashiCorp GPG key and add repository for Terraform
+                    # Import the HashiCorp GPG key and add the repository for Terraform
                     curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
-                    echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
+                    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
                     sudo apt-get update
                     sudo apt-get install -y terraform
 
@@ -51,19 +51,19 @@ pipeline {
         stage('Build AMI with Packer') {
             steps {
                 script {
-                    // Verify the Packer file exists
+                    // Verify the Packer HCL file exists
                     sh 'ls -l goldenimage.pkr.hcl || { echo "goldenimage.pkr.hcl not found!"; exit 1; }'
                     
                     // Initialize Packer plugins
                     sh 'packer init goldenimage.pkr.hcl'
                     
-                    // Run the Packer build and capture output
+                    // Run the Packer build and capture the output
                     def packerOutput = sh(script: '''
                         PACKER_LOG=1 PACKER_LOG_PATH=packer_debug.log \
                         packer build -machine-readable goldenimage.pkr.hcl | tee output.log
                     ''', returnStdout: true).trim()
                     
-                    // Extract the AMI ID from the output using regex
+                    // Extract the AMI ID from the output using a regex pattern
                     def amiIdMatch = packerOutput.find(/ami-\\w{8,17}/)
                     if (amiIdMatch) {
                         env.NEW_AMI_ID = amiIdMatch
@@ -134,5 +134,4 @@ pipeline {
         }
     }
 }
-
 
