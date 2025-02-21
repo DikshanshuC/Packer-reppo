@@ -4,14 +4,11 @@ pipeline {
     environment {
         AWS_REGION     = "ap-south-1"
         AWS_ACCOUNT_ID = "248189928204"
-        KEY_NAME       = "packer"       // Use your key pair name as per your instance details
-        INSTANCE_TYPE  = "t2.small"     // Instance type from your instance summary
     }
 
     stages {
         stage('Checkout Code') {
             steps {
-                // Checkout repository containing goldenimage.pkr.hcl
                 git branch: 'main', url: 'https://github.com/DikshanshuC/Packer-reppo.git'
             }
         }
@@ -19,28 +16,54 @@ pipeline {
         stage('Install Dependencies') {
             steps {
                 sh '''
-                    # Update system packages and install essential tools
+                    # Update system and install essential packages
                     sudo apt-get update
-                    sudo apt-get install -y gnupg2 dirmngr unzip curl wget git htop nginx docker.io ansible default-jdk ca-certificates gnupg software-properties-common
+                    sudo apt-get install -y unzip curl wget git htop nginx docker.io ansible default-jdk ca-certificates gnupg
 
-                    # Enable and start required services
+                    # Enable and start essential services
                     sudo systemctl enable --now nginx
                     sudo systemctl enable --now docker
 
-                    # Import the HashiCorp GPG key and add the repository for Terraform
-                    curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+                    # Add HashiCorp GPG key and repository
+                    wget -qO- https://apt.releases.hashicorp.com/gpg | sudo tee /usr/share/keyrings/hashicorp-archive-keyring.gpg >/dev/null
                     echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
+
+                    # Update system again and install Terraform
                     sudo apt-get update
-                    sudo apt-get install -y terraform
+                    sudo apt install -y terraform 
+
+                    # Handle apt release changes & fix broken packages
+                    until sudo apt update --allow-releaseinfo-change -y; do echo 'Retrying apt update...'; sleep 2; done
+                    sudo apt --fix-broken install -y
 
                     # Install AWS CLI
                     curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
                     unzip -o -q awscliv2.zip
                     sudo ./aws/install --update
 
+                    sudo apt-get update
+                    sudo apt-get install -y unzip curl gnupg software-properties-common
+                    curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo gpg --batch --yes --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+                    echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
+                  
+                    # Add HashiCorp GPG key
+                    curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo gpg --batch --yes --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+                    # Install required dependencies
+                    sudo apt-get update
+                    sudo apt-get install -y ca-certificates curl gnupg
+
+                    # Add HashiCorp GPG key securely
+                    curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo gpg --batch --yes --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+
+                    # Add the HashiCorp repository
+                    echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list > /dev/null
+
+                    # Update package lists
+                    sudo apt-get update
+
                     # Install Jenkins
                     sudo wget -O /usr/share/keyrings/jenkins-keyring.asc https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key
-                    echo "deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc] https://pkg.jenkins.io/debian-stable binary/" | sudo tee /etc/apt/sources.list.d/jenkins.list
+                    echo "deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc] https://pkg.jenkins.io/debian-stable binary/" | sudo tee /etc/apt/sources.list.d/jenkins.list > /dev/null
                     sudo apt-get update
                     sudo apt-get install -y jenkins
                     sudo systemctl enable --now jenkins
@@ -51,19 +74,9 @@ pipeline {
         stage('Build AMI with Packer') {
             steps {
                 script {
-                    // Verify the Packer HCL file exists
                     sh 'ls -l goldenimage.pkr.hcl || { echo "goldenimage.pkr.hcl not found!"; exit 1; }'
-                    
-                    // Initialize Packer plugins
                     sh 'packer init goldenimage.pkr.hcl'
-                    
-                    // Run the Packer build and capture the output
-                    def packerOutput = sh(script: '''
-                        PACKER_LOG=1 PACKER_LOG_PATH=packer_debug.log \
-                        packer build -machine-readable goldenimage.pkr.hcl | tee output.log
-                    ''', returnStdout: true).trim()
-                    
-                    // Extract the AMI ID from the output using a regex pattern
+                    def packerOutput = sh(script: 'PACKER_LOG=1 PACKER_LOG_PATH=packer_debug.log packer build -machine-readable goldenimage.pkr.hcl | tee output.log', returnStdout: true).trim()
                     def amiIdMatch = packerOutput.find(/ami-\\w{8,17}/)
                     if (amiIdMatch) {
                         env.NEW_AMI_ID = amiIdMatch
@@ -75,44 +88,20 @@ pipeline {
             }
         }
 
-        stage('Launch Instance') {
-            steps {
-                script {
-                    echo "Launching EC2 instance from AMI: ${env.NEW_AMI_ID}"
-                    def launchCmd = """
-                        aws ec2 run-instances \\
-                          --image-id ${env.NEW_AMI_ID} \\
-                          --count 1 \\
-                          --instance-type ${INSTANCE_TYPE} \\
-                          --key-name ${KEY_NAME} \\
-                          --region ${AWS_REGION} \\
-                          --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=GoldenInstance}]'
-                    """
-                    echo launchCmd
-                    def launchOutput = sh(script: launchCmd, returnStdout: true).trim()
-                    echo "Instance launch output: ${launchOutput}"
-                }
-            }
-        }
-
         stage('Find and Deregister Old AMI') {
             steps {
                 script {
-                    // Find any previous AMI with the name "goldenImage"
-                    def oldAmiId = sh(script: '''
-                        aws ec2 describe-images --owners self --filters "Name=name,Values=goldenImage" --query "Images | sort_by(@, &CreationDate)[0].ImageId" --output text
-                    ''', returnStdout: true).trim()
-                    
-                    if (oldAmiId && oldAmiId != "None" && oldAmiId != env.NEW_AMI_ID) {
+                    def oldAmiId = sh(script: """
+                    aws ec2 describe-images --owners self --filters "Name=name,Values=goldenImage" --query 'Images | sort_by(@, &CreationDate)[0].ImageId' --output text
+                    """, returnStdout: true).trim()
+                    if (oldAmiId && oldAmiId != "None") {
                         echo "Old AMI ID: ${oldAmiId}"
                         // Deregister the old AMI
                         sh "aws ec2 deregister-image --image-id ${oldAmiId}"
-                        
                         // Find and delete the associated snapshot
-                        def snapshotId = sh(script: '''
-                            aws ec2 describe-images --image-ids ${oldAmiId} --query "Images[0].BlockDeviceMappings[0].Ebs.SnapshotId" --output text
-                        ''', returnStdout: true).trim()
-                        
+                        def snapshotId = sh(script: """
+                        aws ec2 describe-images --image-ids ${oldAmiId} --query 'Images[0].BlockDeviceMappings[0].Ebs.SnapshotId' --output text
+                        """, returnStdout: true).trim()
                         if (snapshotId && snapshotId != "None") {
                             echo "Deleting Snapshot: ${snapshotId}"
                             sh "aws ec2 delete-snapshot --snapshot-id ${snapshotId}"
@@ -127,11 +116,12 @@ pipeline {
 
     post {
         success {
-            echo "AMI creation, instance launch, and cleanup completed successfully!"
+            echo "AMI creation and cleanup completed successfully!"
         }
         failure {
-            echo "Pipeline failed! Check logs for details."
+            echo "Pipeline failed!"
         }
     }
 }
+
 
